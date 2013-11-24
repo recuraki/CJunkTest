@@ -39,6 +39,21 @@
  */
 
 /*
+kanaiめも
+http://linuxjm.sourceforge.jp/html/LDP_man-pages/man7/pty.7.html
+pty  双方向通信チャンネルを提供する仮想キャラクタデバイスのペア
+双方向通信チャンネル: master, slave
+master: ユーザがつかむことを想定している
+slave: プログラムがつかむことを想定している
+
+: 以下、manより
+擬似端末のスレーブは、伝統的な端末と全く同じ動作をするインタフェースを 提供する。
+端末に接続されることを想定しているプロセスは擬似端末の スレーブをオープンすることができ、
+それ以降はマスタ側をオープン しているプログラムからそのプロセスを制御することができる。 
+端末で入力されたのと同じように、 マスタ側に書き込まれた全てのデータは、スレーブ側のプロセスに送られる。 
+ */
+
+/*
  * script
  */
 #include <stdio.h>
@@ -109,6 +124,7 @@ struct	termios tt;
 struct	winsize win;
 int	lb;
 int	l;
+// これが共有仮想端末の名前
 #if !HAVE_LIBUTIL || !HAVE_PTY_H
 char	line[] = "/dev/ptyXX";
 #endif
@@ -298,6 +314,7 @@ main(int argc, char **argv) {
 				timingfd = fdopen(STDERR_FILENO, "w");
 			dooutput(timingfd);
 		} else
+		  // doshellは帰ってこない。execするから
 			doshell();
 	} else {
 		sa.sa_handler = resize;
@@ -322,19 +339,24 @@ doinput(void) {
 		errx(EXIT_FAILURE, _("write error"));
 
 	while (die == 0) {
+	  // ibuf: ユーザからの入力
 		if ((cc = read(STDIN_FILENO, ibuf, BUFSIZ)) > 0) {
+		  // 1入力された信号をそのまま
 	        	for(c_count = 0; c_count < cc; c_count++)
 			{
+			  // マスター＝ユーザからの入力として書き込む
 				ssize_t wrt = write(master, ibuf + c_count, 1);
 				if (wrt < 0) {
 					warn (_("write failed"));
 					fail();
 				}
+				// 改行が入力されていた場合、パイプで子プロセスに渡す
 				if(*(ibuf + c_count) == 0x0d)
 				{
 					timer = time(NULL);
 					date = localtime(&timer);
 					tsize = sprintf(tbuf, "\r\n%s", asctime(date));
+					// パイプへ書き込み
 					write(fds[1], tbuf, tsize);
   				}
         		}
@@ -621,14 +643,23 @@ done(void) {
 void
 getmaster(void) {
 #if defined(HAVE_LIBUTIL) && defined(HAVE_PTY_H)
+  // 仮想端末が使える場合
 	tcgetattr(STDIN_FILENO, &tt);
 	ioctl(STDIN_FILENO, TIOCGWINSZ, (char *)&win);
+	/*
+	int openpty(int *amaster, int *aslave, char *name,
+		    const struct termios *termp,
+		    const struct winsize *winp);
+         スレーブのファイル名が name に返される
+         スレーブの端末パラメータは termp の値に設定される
+         スレーブのウインドウサイズは winp に設定される。
+	 */
 	if (openpty(&master, &slave, NULL, &tt, &win) < 0) {
 		warn(_("openpty failed"));
 		fail();
 	}
 #else
-	char *pty, *bank, *cp;
+ 	char *pty, *bank, *cp;
 	struct stat stb;
 
 	pty = &line[strlen("/dev/ptyp")];
