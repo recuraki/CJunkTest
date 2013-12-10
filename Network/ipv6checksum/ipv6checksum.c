@@ -1,187 +1,249 @@
+/*
+ * ICMPv6 CheckSum Calc
+ * ICMPv6のチェックサム計算機
+ * Written by Akira KANAI<kanai@wide.ad.jp>
+ */
 
 /*
- * RA PACKET STRUCTURE
+ * 解説:
+ * -i で与えられたIPv6パケットをみつけ、それがICMPv6であった場合
+ * ICMPv6 CheckSumの検算を行います。
  */
-struct ra_packet
+
+/*
+ * TODO:
+ * -o で再計算後のを吐けるようにするとか？
+ */
+
+/*
+ * gcc -Wall -o pcap_ipreplacer pcap_ipreplacer.c -lpcap
+ */ 
+
+// pcap的な最長snaplen
+// そもそもpcapって9k動くのか未確認
+#ifndef SNAPLEN
+#define SNAPLEN 1500
+#endif
+
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pcap.h>
+#include <sys/time.h>
+#include <net/ethernet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/in_systm.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/ip_icmp.h>
+#include <netinet/tcp.h>
+#include <netinet/udp.h>
+#include <arpa/inet.h>
+
+/* 関数定義 */
+void do_proc(const u_char *packet, struct pcap_pkthdr *header);
+
+void usage(char *prog) {
+  printf("%s  - ICMPv6 CheckSum Calc\n", prog);
+  printf("$ Written by Akira KANAI<kanai@wide.ad.jp $\n");
+  printf("usage: %s [-v] -i<infile1> -o<outfile> -b<before-ip-address> -a<after-ip-address>\n", prog);
+  exit(-1);
+}
+
+
+struct ip_address
+{
+  union
+  {
+    uint32_t laddr;
+    uint16_t saddr[2];
+  } addr;
+};
+
+struct icmpv6_header
 {
   u_int8_t  type;                        /* 134(0x86) */
   u_int8_t  code;                        /* 0 */
   u_int16_t checksum;                    /* 0 */
 };
 
-struct adv_addr
-{
-  union
-  {
-    u_int8_t   addr8[4];
-    u_int32_t  addr32;
-  } addr;            /* 128-bit IP6 address */
-};
-
-void mac_to_eui64(u_int8_t eui64[], u_int8_t hwaddr[])
-{
-    eui64[0] = hwaddr[0] ^ 0x02;
-    eui64[1] = hwaddr[1];
-    eui64[2] = hwaddr[2];
-    eui64[3] = 0xff;
-    eui64[4] = 0xfe;
-    eui64[5] = hwaddr[3];
-    eui64[6] = hwaddr[4];
-    eui64[7] = hwaddr[5];
-}
 
 int main(int argc, char **argv)
 {
-  /* 
-   * Generic
-   */
-  int i;
-  struct adv_addr adv_number;
-
-  /*
-   * For RA Packet
-   */
-  u_int8_t ipdst[16]  = IP_DST;
-  u_int8_t hwsrc[6]   = MAC_SRC;
-  u_int8_t hwdst[6]   = MAC_DST;
-  char adv_prefix[16] = ADV_PREFIX;
-  u_int32_t checksum;
-  struct ra_packet ra_packet;
-  u_int8_t *payload;
-  u_int8_t eui64src[8];
-  char ifname[16];
   char ch;
+  
+  char *output = NULL;
+  char *input = NULL;
+  pcap_t *pcapin;
 
-  /* 
-   * Libnet Value
-   */
-  char errbuf[LIBNET_ERRBUF_SIZE];
-  struct libnet_in6_addr dst_ip;
-  struct libnet_in6_addr src_ip;
-  libnet_t *l;
-  libnet_ptag_t ip_ptag;
-  libnet_ptag_t eth_ptag;
+  char errbuf[256];
+
+  struct pcap_pkthdr pcap_header;
+  const u_char *packet;
+
+
+
+  if (argc < 3)
+    {
+      usage(argv[0]);
+    }
+
 
   /* Parse the command-line. */
   while ((ch = getopt(argc, argv, "ho:i:b:a:")) != EOF)
     {
-      switch ((char) ch) 
-	{
-	case 'i':
-	  strncpy(ifname, optarg, 16);
-	  break;
+      switch ((char) ch)
+        {
+        case 'o':
+          output = optarg;
+          break;
+        case 'h':
+          usage(argv[0]);
+          break;
+        case 'i':
+          input = optarg;
+          break;
+
 	}
     }
 
-  /*
-   * INIT VALUE
-   */
-  adv_number.addr.addr32 = 0;
-   
-
-  /*
-   * CREAT RA PACKET
-   */
-  ra_packet.type = 134;
-  ra_packet.code = 0;
-  ra_packet.hoplimit = 64;
-  ra_packet.lifetime = htons(1800);
-  ra_packet.reachabletime = 0;
-  ra_packet.retranstime = 0;
-  ra_packet.opt_type = 1;
-  ra_packet.opt_src_len = 1;
-  ra_packet.opt_prefix_type = 3;
-  ra_packet.opt_prefix_len = 4;
-  ra_packet.opt_prefix_prefixlen = 64;
-  ra_packet.opt_prefix_flag = 0xc0;
-  ra_packet.opt_prefix_validtime = htonl(0x00278d00);
-  ra_packet.opt_prefix_preferredtime = htonl(0x00093a80);
-
-  for( i = 0; i < 6; i++)
+  if (input == NULL)
     {
-      ra_packet.opt_src_mac[i] = hwsrc[i];
-    }
-  for( i = 0; i < 16; i++)
-    {
-      ra_packet.opt_prefix_prefix[i] = adv_prefix[i];
+      printf("No input specified.\n");
+      exit(-1);
     }
 
-  /* src ip addr */ 
-    src_ip.__u6_addr.__u6_addr8[0] = 0xfe;
-    src_ip.__u6_addr.__u6_addr8[1] = 0x80;
-    src_ip.__u6_addr.__u6_addr8[2] = 0x00;
-    src_ip.__u6_addr.__u6_addr8[3] = 0x00;
-    src_ip.__u6_addr.__u6_addr8[4] = 0x00;
-    src_ip.__u6_addr.__u6_addr8[5] = 0x00;
-    src_ip.__u6_addr.__u6_addr8[6] = 0x00;
-    src_ip.__u6_addr.__u6_addr8[7] = 0x00;
+  /* pcapファイルを開きます */
+  printf("INPUT PCAP: (%s).\n", input);
+  if ((pcapin = pcap_open_offline(input, errbuf)) == NULL)
+    {
+      printf("Error: %s\n", errbuf);
+      exit(-1);
+    }
 
-  while(1){ 
-    adv_number.addr.addr32++;
+  /* まず、パケットを開き、パケットが何もなければエラー */
+  if ( (packet =pcap_next(pcapin,&pcap_header) ) == NULL)
+    {
+      printf("Error: no packets in capture file %s\n", input);
+      exit(-1);
+    }
 
-    ra_packet.opt_src_mac[2] = adv_number.addr.addr8[3];
-    ra_packet.opt_src_mac[3] = adv_number.addr.addr8[2];
-    ra_packet.opt_src_mac[4] = adv_number.addr.addr8[1];
-    ra_packet.opt_src_mac[5] = adv_number.addr.addr8[0];
-
-    ra_packet.opt_prefix_prefix[2] = adv_number.addr.addr8[3];
-    ra_packet.opt_prefix_prefix[3] = adv_number.addr.addr8[2];
-    ra_packet.opt_prefix_prefix[4] = adv_number.addr.addr8[1];
-    ra_packet.opt_prefix_prefix[5] = adv_number.addr.addr8[0];
-
-    hwsrc[2] = adv_number.addr.addr8[3];
-    hwsrc[3] = adv_number.addr.addr8[2];
-    hwsrc[4] = adv_number.addr.addr8[1];
-    hwsrc[5] = adv_number.addr.addr8[0];
+  /* pcapinを最後まで読む */
+  while(packet != NULL)
+    {
+      do_proc(packet, &pcap_header);
+      /* 次のパケットを読む */
+      packet = pcap_next(pcapin, &pcap_header);
+    } /* while */
 
 
-    /* Creat EUI64 from MAC_addr for ipv6 src_ip_addr */
-#if 0
-    eui64src[0] = hwsrc[0] ^ 0x02;
-    eui64src[1] = hwsrc[1];
-    eui64src[2] = hwsrc[2];
-    eui64src[3] = 0xff;
-    eui64src[4] = 0xfe;
-    eui64src[5] = hwsrc[3];
-    eui64src[6] = hwsrc[4];
-    eui64src[7] = hwsrc[5];
+  pcap_close(pcapin);
+
+#if 0 
+  /* Calc Pseudo Header Checksum */
+  checksum = 0;
+  for(i = 0; i < 8; i++) {
+    checksum += (u_int16_t)ntohs((u_int16_t)src_ip.__u6_addr.__u6_addr16[i]);
+  }
+  for(i = 0; i < 8; i++) {
+    checksum += (u_int16_t)ntohs((u_int16_t)dst_ip.__u6_addr.__u6_addr16[i]);
+  }
+  checksum += sizeof(struct ra_packet); /* pesudo-next-type */
+  checksum += 58; /* pesudo-next-type */
+
+  /* Calc ICMPv6 Checksum */
+  ra_packet.checksum = 0;
+  payload = (char *)&ra_packet;
+  for(i = 0; i < 23; i++)
+    {
+      checksum += (u_int32_t)(((u_int32_t)payload[2*i] << 8) + ((u_int32_t)payload[2*i+ 1]));
+    }
+  checksum = 0xffff - ( (checksum >>16) + (checksum << 16 >> 16) );
+  ra_packet.checksum = htons(checksum);
 #endif
-    mac_to_eui64(eui64src, hwsrc);
 
-    /* Creat Link Local Address from EUI64 */
-    src_ip.__u6_addr.__u6_addr8[8] = eui64src[0];
-    src_ip.__u6_addr.__u6_addr8[9] = eui64src[1];
-    src_ip.__u6_addr.__u6_addr8[10] = eui64src[2];
-    src_ip.__u6_addr.__u6_addr8[11] = eui64src[3];
-    src_ip.__u6_addr.__u6_addr8[12] = eui64src[4];
-    src_ip.__u6_addr.__u6_addr8[13] = eui64src[5];
-    src_ip.__u6_addr.__u6_addr8[14] = eui64src[6];
-    src_ip.__u6_addr.__u6_addr8[15] = eui64src[7];
 
-    /* Set Dest Addr */
-    for(i = 0; i < 16; i++)
-      {
-	dst_ip.__u6_addr.__u6_addr8[i] = ipdst[i];
-      }
+  return(0);
+}
 
-    /* Calc Pseudo Header Checksum */
-    checksum = 0;
-    for(i = 0; i < 8; i++) {
-      checksum += (u_int16_t)ntohs((u_int16_t)src_ip.__u6_addr.__u6_addr16[i]);
+void do_proc(const u_char *packet, struct pcap_pkthdr *header)
+{
+  int i;
+
+  u_int8_t ipdst[16];
+  u_int8_t hwsrc[6];
+  u_int8_t hwdst[6];
+  u_int32_t checksum;
+  u_int8_t *payload;
+  u_int8_t eui64src[8];
+
+
+  struct ether_header *ethhdr;
+  struct ip6_hdr *ip6hdr;
+
+  /* EtherのNextHeaderをみてIPv6じゃないならDISCARD */
+  ethhdr = (struct ether_header *)(packet);
+  if(ntohs(ethhdr->ether_type) != ETHERTYPE_IPV6)
+    {
+      return;
     }
-    for(i = 0; i < 8; i++) {
-      checksum += (u_int16_t)ntohs((u_int16_t)dst_ip.__u6_addr.__u6_addr16[i]);
+
+  printf("IPv6 !\n");
+
+  ip6hdr = (struct ip6_hdr *)(packet + ETHER_HDR_LEN);
+  printf("SRC:\n");
+  for(i = 0; i < 8; i++)
+    {
+      printf("%x:", ntohs(ip6hdr->ip6_src.__u6_addr.__u6_addr16[i]));
     }
-    checksum += sizeof(struct ra_packet); /* pesudo-next-type */
-    checksum += 58; /* pesudo-next-type */
+  printf("\n");
+}
 
-    /* Calc ICMPv6 Checksum */
-    ra_packet.checksum = 0;
-    payload = (char *)&ra_packet;
-    for(i = 0; i < 23; i++)
-      {
-	checksum += (u_int32_t)(((u_int32_t)payload[2*i] << 8) + ((u_int32_t)payload[2*i+ 1]));
-      }
-    checksum = 0xffff - ( (checksum >>16) + (checksum << 16 >> 16) );
-    ra_packet.checksum = htons(checksum);
+#if 0
 
+struct in6_addr {
+  union {
+    uint8_t         __u6_addr8[16];
+    uint16_t        __u6_addr16[8];
+    uint32_t        __u6_addr32[4];
+  } __u6_addr;                    /* 128-bit IP6 address */
+};
+
+struct ip6_hdr {
+  union {
+    struct ip6_hdrctl {
+      u_int32_t ip6_un1_flow; /* 20 bits of flow-ID */
+      u_int16_t ip6_un1_plen; /* payload length */
+      u_int8_t  ip6_un1_nxt;  /* next header */
+      u_int8_t  ip6_un1_hlim; /* hop limit */
+    } ip6_un1;
+    u_int8_t ip6_un2_vfc;   /* 4 bits version, top 4 bits class */
+  } ip6_ctlun;
+  struct in6_addr ip6_src;        /* source address */
+  struct in6_addr ip6_dst;        /* destination address */
+} __packed;
+
+struct icmp6_hdr {
+  u_int8_t        icmp6_type;     /* type field */
+  u_int8_t        icmp6_code;     /* code field */
+  u_int16_t       icmp6_cksum;    /* checksum field */
+  union {
+    u_int32_t       icmp6_un_data32[1]; /* type-specific field */
+    u_int16_t       icmp6_un_data16[2]; /* type-specific field */
+    u_int8_t        icmp6_un_data8[4];  /* type-specific field */
+  } icmp6_dataun;
+} __packed;
+
+- NEXT HEADER
+#define IPPROTO_IP              0               /* dummy for IP */
+#define IPPROTO_ICMP            1               /* control message protocol */
+#define IPPROTO_IPV4            4               /* IPv4 encapsulation */
+#define IPPROTO_TCP             6               /* tcp */
+#define IPPROTO_UDP             17              /* user datagram protocol */
+#define IPPROTO_ICMPV6          58              /* ICMP6 */
+#endif 
