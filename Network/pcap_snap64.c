@@ -3,7 +3,7 @@
  * Written by Akira KANAI< kanai at wide.ad.jp>
  * Compile:
  * gcc -Wall -lpcap -p pcap_snap64 pcap_snap64.c
- * 以下のオプションで64byte以外のsnapにもできます
+ * 以下のオプションで標準のsnaplenを変更できる
  * -DSNAPLEN=40
  */
 
@@ -35,6 +35,7 @@ int main (int argc, char **argv)
   char *output = NULL;
   char *input1 = NULL;
   int ch;
+  bpf_u_int32 sl = SNAPLEN;
 
   // 引数チェック
   if (argc < 2)
@@ -43,7 +44,7 @@ int main (int argc, char **argv)
     }
 
   // 引数のパース
-  while ((ch = getopt(argc, argv, "ho:1:2:")) != EOF) 
+  while ((ch = getopt(argc, argv, "ho:1:2:s:")) != EOF) 
     {
       switch ((char) ch) 
 	{
@@ -56,6 +57,9 @@ int main (int argc, char **argv)
 	case '1':
 	  input1 = optarg;
 	  break;
+        case 's':
+          sl = (bpf_u_int32) atoi(optarg);
+          break;
 	}
     }
 
@@ -98,7 +102,7 @@ int main (int argc, char **argv)
   while(packet1 != NULL) {
     // dumpする際に書き込むデータ長はcaplenに入っているので、
     // SNAPLENより長ければSNAPLENにする
-    header1.caplen = header1.caplen > SNAPLEN ? SNAPLEN : header1.caplen;
+    header1.caplen = header1.caplen > sl ? sl : header1.caplen;
     // 書き込む
     pcap_dump((u_char *)popen, &header1, packet1 );
     // 次のパケットを得る
