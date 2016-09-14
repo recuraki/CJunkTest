@@ -20,7 +20,7 @@
 
 void usage(char *prog) 
 {
-  printf("usage: %s -i<infile> -o<outfile> -s<snaplen>\n", prog);
+  printf("usage: %s -i<infile> -o<outfile> [-s<snaplen>]\n", prog);
   exit(-1);
 }
 
