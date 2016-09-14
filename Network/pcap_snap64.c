@@ -20,7 +20,7 @@
 
 void usage(char *prog) 
 {
-  printf("usage: %s -1<infile1> -o<outfile>\n", prog);
+  printf("usage: %s -i<infile> -o<outfile> -s<snaplen>\n", prog);
   exit(-1);
 }
 
@@ -44,7 +44,7 @@ int main (int argc, char **argv)
     }
 
   // 引数のパース
-  while ((ch = getopt(argc, argv, "ho:1:2:s:")) != EOF) 
+  while ((ch = getopt(argc, argv, "ho:i:s:")) != EOF) 
     {
       switch ((char) ch) 
 	{
@@ -54,7 +54,7 @@ int main (int argc, char **argv)
 	case 'h':
 	  usage(argv[0]);
 	  break;
-	case '1':
+	case 'i':
 	  input1 = optarg;
 	  break;
         case 's':
