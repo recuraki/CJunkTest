@@ -1,0 +1,181 @@
+--- script.c.orig	2024-10-17 14:53:49
++++ script.c	2024-10-17 14:53:49
+@@ -93,6 +93,18 @@
+ int	childstatus;
+ char	*fname;
+ 
++time_t timer;
++struct tm *date;
++int c_count;
++int fds[2]; // 0: Parent, 1: Child(Process)
++int nfds; // selectの個数
++fd_set rfds; // Read FDS for Select 
++fd_set orfds;// Original Read FDS for Select
++struct timeval select_to_val; // selectのtimeout
++#ifndef MAX
++#define MAX(a,b) (a > b ? a : b)
++#endif
++
+ struct	termios tt;
+ struct	winsize win;
+ int	lb;
+@@ -243,6 +255,13 @@
+ 		printf(_("Script started, file is %s\n"), fname);
+ 	fixtty();
+ 
++	/* プロセス間パイプを作成 */
++	if (pipe(fds) < 0)
++	{
++	  perror("pipe()");
++	  return -1;
++	}
++
+ #ifdef HAVE_LIBUTEMPTER
+ 	utempter_add_record(master, NULL);
+ #endif
+@@ -296,16 +315,31 @@
+ 	ssize_t cc;
+ 	char ibuf[BUFSIZ];
+ 
++	char tbuf[BUFSIZ];
++	ssize_t tsize;
++
+ 	if (close_stream(fscript) != 0)
+ 		errx(EXIT_FAILURE, _("write error"));
+ 
+ 	while (die == 0) {
+ 		if ((cc = read(STDIN_FILENO, ibuf, BUFSIZ)) > 0) {
+-			ssize_t wrt = write(master, ibuf, cc);
+-			if (wrt < 0) {
+-				warn (_("write failed"));
+-				fail();
+-			}
++	        	for(c_count = 0; c_count < cc; c_count++)
++			{
++				ssize_t wrt = write(master, ibuf + c_count, 1);
++				if (wrt < 0) {
++					warn (_("write failed"));
++					fail();
++				}
++				if(*(ibuf + c_count) == 0x0d)
++				{
++					timer = time(NULL);
++					date = localtime(&timer);
++					tsize = sprintf(tbuf, "\nLOG_TIMESTAMP:%4d-%02d-%02dT%02d:%02d:%02d%+.02d:00\r",
++                                                        (date->tm_year)+1900, date->tm_mon+1, date->tm_mday,
++                                                         date->tm_hour, date->tm_min, date->tm_sec, (int) - timezone / 3600);
++					write(fds[1], tbuf, tsize);
++  				}
++        		}
+ 		}
+ 		else if (cc < 0 && errno == EINTR && resized)
+ 			resized = 0;
+@@ -313,6 +347,9 @@
+ 			break;
+ 	}
+ 
++	//        close(fds[0]); 
++	//        close(fds[1]); 
++
+ 	done();
+ }
+ 
+@@ -366,7 +403,21 @@
+ 	my_strftime(obuf, sizeof obuf, "%c\n", localtime(&tvec));
+ 	fprintf(fscript, _("Script started on %s"), obuf);
+ 
++
++	/* Selectの準備 */
++        FD_ZERO(&orfds);
++        FD_SET(master, &orfds);
++        FD_SET(fds[0], &orfds);
++	nfds = MAX(master, fds[0]);
++	select_to_val.tv_sec = 1;
++	select_to_val.tv_usec = 0;
++
+ 	do {
++
++	        if (die == 1) {
++		  break;
++		}
++
+ 		if (die && flgs == 0) {
+ 			/* ..child is dead, but it doesn't mean that there is
+ 			 * nothing in buffers.
+@@ -375,10 +426,34 @@
+ 			if (fcntl(master, F_SETFL, (flgs | O_NONBLOCK)) == -1)
+ 				break;
+ 		}
++
++		/* Select する */
++		rfds = orfds;
++                //if(select(nfds + 1, &rfds, NULL, NULL, &select_to_val) < 0){
++                if(select(nfds + 1, &rfds, NULL, NULL, NULL) < 0){
++		  if(errno == EINTR){
++		    continue;
++		  }
++		  perror("select");
++		  exit(1);
++		}
++
++		if (die && flgs == 0) {
++			/* ..child is dead, but it doesn't mean that there is
++			 * nothing in buffers.
++			 */
++			flgs = fcntl(master, F_GETFL, 0);
++			if (fcntl(master, F_SETFL, (flgs | O_NONBLOCK)) == -1)
++				break;
++		}
++
+ 		if (tflg)
+ 			gettimeofday(&tv, NULL);
+ 
+ 		errno = 0;
++
++		if(FD_ISSET(master, &rfds)){
++
+ 		cc = read(master, obuf, sizeof (obuf));
+ 
+ 		if (die && errno == EINTR && cc <= 0)
+@@ -405,8 +480,41 @@
+ 		}
+ 		if (fflg)
+ 			fflush(fscript);
++
++
++	      	} /* FD_ISSET(master, &rfds) */
++
++
++		if (die && flgs == 0) {
++			/* ..child is dead, but it doesn't mean that there is
++			 * nothing in buffers.
++			 */
++			flgs = fcntl(master, F_GETFL, 0);
++			if (fcntl(master, F_SETFL, (flgs | O_NONBLOCK)) == -1)
++				break;
++		}
++
++
++		if(FD_ISSET(fds[0], &rfds)){
++  		  cc = read(fds[0], obuf, sizeof (obuf));
++  		  if (die && errno == EINTR && cc <= 0)
++			continue;
++  		  if (cc <= 0)
++			break;
++		  fwrt = fwrite(obuf, 1, cc, fscript);
++		  if (fwrt < cc) {
++		    warn (_("cannot write script file"));
++		    fail();
++		  }
++		  if (fflg)
++		    fflush(fscript);
++		}
++
+ 	} while(1);
+ 
++        close(fds[0]); // 入力
++        close(fds[1]); // 出力
++
+ 	if (flgs)
+ 		fcntl(master, F_SETFL, flgs);
+ 	if (close_stream(timingfd) != 0)
